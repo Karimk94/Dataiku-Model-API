@@ -1,0 +1,26 @@
+# Virtual environment
+venv/
+.venv/
+
+# Python bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyc
+
+# Temp images
+temp_*.jpg
+
+# Embeddings (generated at runtime)
+embeddings.json
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Model weights (large files — ship separately)
+models/
