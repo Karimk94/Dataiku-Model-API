@@ -2,17 +2,12 @@
 Dataiku Model API
 =================
 A lightweight Flask API that hosts DeepFace models for face detection and
-recognition.  This service stores **only embedding vectors** (arrays of floats)
-— never actual face images.  Thumbnails and face images are managed by the
-companion Thumbnail API.
+embedding computation. This service is **stateless**.
 
 Endpoints
 ---------
 POST /detect_faces      — Detect face locations in a base64-encoded image.
-POST /recognize_faces   — Recognize pre-cropped face thumbnails.
-POST /enroll_face       — Compute and store an embedding for a new face.
-POST /delete_face       — Remove all embeddings for a person.
-GET  /list_faces        — List all enrolled people and embedding counts.
+POST /get_embeddings    — Compute embeddings for an array of base64-encoded face crops.
 GET  /health            — Health-check / readiness probe.
 """
 
@@ -28,20 +23,12 @@ import os
 import shutil
 import random
 
-from embedding_store import EmbeddingStore
-
 # ---------------------------------------------------------------------------
 # App setup
 # ---------------------------------------------------------------------------
 
 app = Flask(__name__)
 CORS(app, resources={r"/*": {"origins": "*"}})
-
-EMBEDDINGS_FILE = os.environ.get(
-    "EMBEDDINGS_FILE",
-    os.path.join(os.path.dirname(__file__), "embeddings.json"),
-)
-embedding_store = EmbeddingStore(storage_path=EMBEDDINGS_FILE)
 
 
 # ---------------------------------------------------------------------------
@@ -163,10 +150,10 @@ def detect_faces():
             os.remove(temp_path)
 
 
-@app.route("/recognize_faces", methods=["POST"])
-def recognize_faces():
+@app.route("/get_embeddings", methods=["POST"])
+def get_embeddings():
     """
-    Recognize pre-cropped face thumbnails against enrolled embeddings.
+    Compute embeddings for pre-cropped face thumbnails.
 
     Request JSON::
 
@@ -174,9 +161,9 @@ def recognize_faces():
 
     Response JSON::
 
-        { "faces": [
-            { "index": 1, "name": "ahmed_bahrozyan", "distance": 0.45 },
-            { "index": 2, "name": "Unknown", "distance": null },
+        { "embeddings": [
+            [0.1, 0.2, ...],
+            null,
             ...
         ]}
     """
@@ -199,98 +186,23 @@ def recognize_faces():
 
             if embedding_result:
                 embedding = embedding_result[0]["embedding"]
-                name, distance = embedding_store.find_closest(embedding)
-                results.append({"index": i + 1, "name": name, "distance": distance})
+                results.append(embedding)
             else:
-                results.append({"index": i + 1, "name": "Unknown", "distance": None})
+                results.append(None)
 
         except Exception as e:
-            app.logger.error(f"Error recognising face {i + 1}: {e}", exc_info=True)
-            results.append({"index": i + 1, "name": "Unknown", "distance": None})
+            app.logger.error(f"Error computing embedding for face {i + 1}: {e}", exc_info=True)
+            results.append(None)
 
-    return jsonify({"faces": results})
-
-
-@app.route("/enroll_face", methods=["POST"])
-def enroll_face():
-    """
-    Enroll a face: compute its embedding and store it (no image is saved).
-
-    Request JSON::
-
-        { "name": "Ahmed Bahrozyan", "face_b64": "<base64 crop>" }
-
-    Response JSON::
-
-        { "success": true, "message": "Embedding stored for 'ahmed_bahrozyan'." }
-    """
-    data = request.get_json(silent=True)
-    if not data or "name" not in data or "face_b64" not in data:
-        return jsonify({"error": "Missing 'name' or 'face_b64'."}), 400
-
-    try:
-        name = data["name"].replace(" ", "_").lower()
-        img = _b64_to_image(data["face_b64"])
-        img_np = np.array(img)
-
-        embedding_result = DeepFace.represent(
-            img_path=img_np,
-            model_name="VGG-Face",
-            enforce_detection=False,
-            detector_backend="skip",
-        )
-
-        if not embedding_result:
-            return jsonify({"error": "Could not compute face embedding."}), 500
-
-        embedding = embedding_result[0]["embedding"]
-        embedding_store.add(name, embedding)
-
-        return jsonify({
-            "success": True,
-            "message": f"Embedding stored for '{name}'.",
-        })
-
-    except Exception as e:
-        app.logger.error(f"Error in /enroll_face: {e}", exc_info=True)
-        return jsonify({"error": f"Enrollment failed: {e}"}), 500
-
-
-@app.route("/delete_face", methods=["POST"])
-def delete_face():
-    """
-    Delete all embeddings for a person.
-
-    Request JSON::
-
-        { "name": "ahmed_bahrozyan" }
-    """
-    data = request.get_json(silent=True)
-    if not data or "name" not in data:
-        return jsonify({"error": "Missing 'name'."}), 400
-
-    name = data["name"].replace(" ", "_").lower()
-    removed = embedding_store.remove(name)
-
-    if removed:
-        return jsonify({"success": True, "message": f"Removed all embeddings for '{name}'."})
-    return jsonify({"success": False, "message": f"'{name}' not found in store."})
-
-
-@app.route("/list_faces", methods=["GET"])
-def list_faces():
-    """List all enrolled people and their embedding counts."""
-    return jsonify({"faces": embedding_store.list_faces()})
+    return jsonify({"embeddings": results})
 
 
 @app.route("/health", methods=["GET"])
 def health():
     """Health-check endpoint."""
-    faces = embedding_store.list_faces()
     return jsonify({
         "status": "ok",
-        "enrolled_people": len(faces),
-        "total_embeddings": sum(faces.values()),
+        "service": "Dataiku Model API (Stateless)"
     })
 
 
@@ -302,11 +214,11 @@ if __name__ == "__main__":
     try:
         from waitress import serve as waitress_serve
 
-        port = int(os.environ.get("HTTP_PLATFORM_PORT", 5003))
+        port = int(os.environ.get("HTTP_PLATFORM_PORT", 5009))
         print(f"Starting Dataiku Model API on port {port}...")
         waitress_serve(app, host="0.0.0.0", port=port, threads=100)
     except ImportError:
         # Fallback to Flask dev server if waitress is not available
-        port = int(os.environ.get("HTTP_PLATFORM_PORT", 5003))
+        port = int(os.environ.get("HTTP_PLATFORM_PORT", 5009))
         print(f"Starting Dataiku Model API (dev mode) on port {port}...")
         app.run(host="0.0.0.0", port=port, debug=True)

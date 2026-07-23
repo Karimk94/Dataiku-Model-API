@@ -17,10 +17,12 @@ embeddings.json
 # IDE
 .vscode/
 .idea/
+.env
 
 # OS
 .DS_Store
 Thumbs.db
+web.config
 
 # Model weights (large files — ship separately)
 models/
