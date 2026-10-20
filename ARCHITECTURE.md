@@ -1,217 +1,164 @@
-# Dataiku Model API — Architecture
+# Dataiku Model API — Architecture & System Design
 
-This API hosts the DeepFace ML models for face detection and recognition.
-It stores **only embedding vectors** (arrays of floats) — never actual face images.
+This API is the **stateless machine learning perception engine** for face detection and dense vector representation in the Smart EDMS ecosystem. It isolates deep neural network computation (TensorFlow, RetinaFace, VGG-Face) from application logic.
 
 ---
 
-## System Overview
+## 1. System Overview & The Three-Tier AI Pipeline
+
+In the Smart EDMS architecture, **Dataiku Model API** serves as the **ML Perception Middleware** bridging the application gateway ([Face Recognition py](file:///d:/projects/new%20EDMS%20py/Face%20Recognition%20py)) with cognitive enterprise services (**GovAI LLM**):
 
 ```mermaid
-graph LR
-    FE["Frontend<br/>(Smart EDMS POC)"] -->|"same endpoints<br/>as before"| TH["Thumbnail API<br/>(Your Server · port 5002)"]
-    TH -->|"Base64 images<br/>in JSON"| DK["Model API<br/>(Dataiku · port 5003)"]
-    
-    subgraph "Your Server"
-        TH --- DB["known_faces_db/<br/>(face images on disk)"]
+graph TD
+    subgraph Tier1 ["Tier 1: Gateway & Application Orchestration"]
+        FR["Face Recognition py<br/>(Port 5002 - FastAPI)"]
+        CDB[("ChromaDB<br/>(faces collection - L2 distance)")]
+        PIL["Pillow Engine<br/>(Crops, Bounding Boxes, Labels)"]
+        FR <--> CDB
+        FR <--> PIL
     end
-    
-    subgraph "Dataiku"
-        DK --- EMB["embeddings.json<br/>(vectors only — no images)"]
-        DK --- MDL["models/<br/>(VGG-Face + RetinaFace)"]
+
+    subgraph Tier2 ["Tier 2: ML Perception Middleware (This Service)"]
+        DK["Dataiku Model API<br/>(Port 5009 / Dataiku DSS :13000)"]
+        RF["RetinaFace Detector<br/>(Bounding Box Coordinates)"]
+        VGG["VGG-Face Extractor<br/>(4096-dim Vector Embeddings)"]
+        DK --> RF
+        DK --> VGG
     end
+
+    subgraph Tier3 ["Tier 3: Cognitive & Linguistic Intelligence"]
+        TRANS["Translator Service<br/>(Port 5010)"]
+        GOVAI["GovAI LLM Platform<br/>(llmapi.govai.ae)"]
+        TRANS <--> GOVAI
+    end
+
+    FR -->|"1. POST /detect_faces (Base64 Image)<br/>2. POST /get_embeddings (Base64 Crops)"| DK
+    DK -->|"Returns Coordinates [x,y,w,h]<br/>& Dense Embedding Vectors"| FR
+    FR -->|"3. Transliterate Arabic Names"| TRANS
 ```
 
 ---
 
-## What This API Does
+## 2. What This API Does vs. What It Does NOT Do
 
+### What This API Does
 | Responsibility | Details |
-|---------------|---------|
-| **Face Detection** | Uses RetinaFace to locate faces in images — returns coordinates only |
-| **Face Recognition** | Computes VGG-Face embeddings and compares against stored embeddings |
-| **Embedding Storage** | Maintains `embeddings.json` — a lightweight JSON file of float vectors |
-| **Model Hosting** | Loads VGG-Face and RetinaFace models from the `models/` directory |
+|---|---|
+| **Facial Detection** | Uses RetinaFace deep neural network to locate faces and return bounding box coordinates `[x, y, w, h]` and confidence scores. |
+| **Dense Vector Embeddings** | Computes high-dimensional feature representations (4096-dimensional vectors) via VGG-Face. |
+| **Offline Model Bootstrapping** | Pre-loads local `.h5` model weights (`vgg_face_weights.h5`, `retinaface.h5`) into the DeepFace cache during startup. |
+| **Stateless Concurrency** | Processes all requests in-memory using Waitress WSGI with 100 worker threads. |
 
-## What This API Does NOT Do
-
+### What This API Does NOT Do
 | Responsibility | Handled By |
-|---------------|-----------|
-| Store face images | Thumbnail API |
-| Generate thumbnails | Thumbnail API |
-| Draw bounding boxes | Thumbnail API |
-| Serve frontend endpoints | Thumbnail API |
+|---|---|
+| **Store Face Images or Thumbnails** | `Face Recognition py` (Gateway) |
+| **Maintain Vector Databases** | `Face Recognition py` (ChromaDB `faces` collection) |
+| **Draw Visual Annotations / Bounding Boxes** | `Face Recognition py` (Pillow engine) |
+| **Bilingual Name Translation** | `GovAI LLM` (via Translator Service) |
+| **Direct Client / EDMS Ingestion** | `Face Recognition py` (FastAPI endpoints) |
 
 ---
 
-## Endpoints
+## 3. Data Flow: Full Pipeline Interaction
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor User as Smart EDMS / ..\EDMS API
+    participant GW as Face Recognition py<br/>(Gateway · :5002)
+    participant DK as Dataiku Model API<br/>(Middleware · :5009)
+    participant CDB as ChromaDB<br/>(Vector Store)
+    participant LLM as GovAI LLM<br/>(llmapi.govai.ae)
+
+    User->>GW: POST /api/analyze_image_stream (Image Bytes)
+    Note over GW: Base64-encode image
+
+    GW->>DK: POST /detect_faces {"image_b64": "..."}
+    Note over DK: RetinaFace inference
+    DK-->>GW: {"faces": [{"x": 100, "y": 50, "w": 80, "h": 100, "confidence": 0.99}]}
+
+    Note over GW: Crop face thumbnails with Pillow
+    GW->>DK: POST /get_embeddings {"faces": ["<crop_1>", ...]}
+    Note over DK: VGG-Face inference
+    DK-->>GW: {"embeddings": [[0.012, -0.048, ...]]}
+
+    GW->>CDB: collection.query(embeddings=[...], n_results=1)
+    CDB-->>GW: Match: "ahmed_bahrozyan" (L2 distance: 0.28)
+
+    opt If new face enrolled with Arabic name
+        GW->>LLM: Translate "أحمد بهروزيان" to English
+        LLM-->>GW: "Ahmed Bahrozyan"
+    end
+
+    Note over GW: Draw green bounding boxes & text labels
+    GW-->>User: {faces: [...], processed_image: "...", original_image_b64: "..."}
+```
+
+---
+
+## 4. Endpoints & Interface Contract
 
 ### `POST /detect_faces`
-Detects face locations in a Base64-encoded image.
+Receives a Base64-encoded image and returns an array of detected face boxes.
 
-```
-Request:  { "image_b64": "<base64 string>" }
-Response: { "faces": [
-    { "index": 1, "x": 100, "y": 50, "w": 80, "h": 100, "confidence": 0.99 }
-]}
-```
+* **Request**:
+  ```json
+  { "image_b64": "<base64_string>" }
+  ```
+* **Response**:
+  ```json
+  {
+    "faces": [
+      { "index": 1, "x": 100, "y": 50, "w": 80, "h": 100, "confidence": 0.99 }
+    ]
+  }
+  ```
 
-### `POST /recognize_faces`
-Recognizes pre-cropped face thumbnails against stored embeddings.
+---
 
-```
-Request:  { "faces": ["<b64_crop_1>", "<b64_crop_2>"] }
-Response: { "faces": [
-    { "index": 1, "name": "ahmed_bahrozyan", "distance": 0.45 },
-    { "index": 2, "name": "Unknown", "distance": null }
-]}
-```
+### `POST /get_embeddings`
+Computes mathematical vector representations for an array of pre-cropped face images.
 
-### `POST /enroll_face`
-Computes an embedding for a face crop and stores it. **No image is saved.**
+* **Request**:
+  ```json
+  {
+    "faces": [
+      "<base64_crop_1>",
+      "<base64_crop_2>"
+    ]
+  }
+  ```
+* **Response**:
+  ```json
+  {
+    "embeddings": [
+      [0.0124, -0.0481, 0.0921, "... (4096 floats) ..."],
+      null
+    ]
+  }
+  ```
 
-```
-Request:  { "name": "Ahmed Bahrozyan", "face_b64": "<base64 crop>" }
-Response: { "success": true, "message": "Embedding stored for 'ahmed_bahrozyan'." }
-```
-
-### `POST /delete_face`
-Removes all embeddings for a person.
-
-```
-Request:  { "name": "ahmed_bahrozyan" }
-Response: { "success": true, "message": "Removed all embeddings for 'ahmed_bahrozyan'." }
-```
-
-### `GET /list_faces`
-Lists all enrolled people and how many embeddings each has.
-
-```
-Response: { "faces": { "ahmed_bahrozyan": 2, "mattar_al_tayer": 1 } }
-```
+---
 
 ### `GET /health`
-Health-check / readiness probe.
+Readiness and liveness probe for monitoring tools and load balancers.
 
-```
-Response: { "status": "ok", "enrolled_people": 15, "total_embeddings": 23 }
-```
-
----
-
-## How Recognition Works (Embeddings-Only)
-
-Traditional DeepFace recognition requires a directory of face images on disk.
-This API replaces that with a pure-embeddings approach:
-
-```mermaid
-sequenceDiagram
-    participant TH as Thumbnail API
-    participant DK as This API
-    participant ES as EmbeddingStore<br/>(embeddings.json)
-
-    TH->>DK: POST /recognize_faces<br/>{"faces": ["b64_crop"]}
-    
-    DK->>DK: DeepFace.represent(crop)<br/>→ [2622 floats]
-    DK->>ES: find_closest(embedding)
-    ES->>ES: Euclidean L2 distance<br/>vs all stored embeddings
-    ES-->>DK: ("ahmed_bahrozyan", 0.45)
-    
-    DK-->>TH: {"faces": [{"name": "ahmed_bahrozyan", "distance": 0.45}]}
-```
-
-**Key facts about embeddings:**
-- VGG-Face produces a **2,622-dimension float vector** per face
-- Each embedding is ~21 KB (vs 50-200 KB for a face image)
-- Distance comparison is pure NumPy math — microseconds per comparison
-- The threshold for a match is **≤ 0.9** (euclidean L2), same as the original system
+* **Response**:
+  ```json
+  {
+    "status": "ok",
+    "service": "Dataiku Model API (Stateless)"
+  }
+  ```
 
 ---
 
-## Data Flow: Analyze Image (Full Pipeline)
+## 5. Deployment Topology
 
-```mermaid
-sequenceDiagram
-    participant FE as Frontend
-    participant TH as Thumbnail API<br/>(Your Server)
-    participant DK as Model API<br/>(Dataiku)
-
-    FE->>TH: POST /api/analyze_image_stream<br/>(raw image bytes)
-    
-    Note over TH: Base64-encode the image
-
-    TH->>DK: POST /detect_faces<br/>{"image_b64": "..."}
-    DK->>DK: RetinaFace detection
-    DK-->>TH: {"faces": [{x,y,w,h}, ...]}
-    
-    Note over TH: Crop each face using PIL<br/>Generate thumbnail_b64
-
-    TH->>DK: POST /recognize_faces<br/>{"faces": ["b64_crop_1", ...]}
-    DK->>DK: Compute embeddings<br/>Compare vs stored embeddings
-    DK-->>TH: {"faces": [{name, distance}, ...]}
-
-    Note over TH: Draw bounding boxes<br/>Merge all results
-
-    TH-->>FE: {faces, processed_image, original_image_b64}
-```
-
-## Data Flow: Enroll a Face
-
-```mermaid
-sequenceDiagram
-    participant FE as Frontend
-    participant TH as Thumbnail API
-    participant DK as Model API<br/>(Dataiku)
-
-    FE->>TH: POST /api/add_face<br/>{name, location, original_image_b64}
-
-    Note over TH: Crop face using PIL
-
-    TH->>TH: Save image to<br/>known_faces_db/name/face_N.jpg
-    TH->>DK: POST /enroll_face<br/>{"name": "...", "face_b64": "..."}
-    
-    DK->>DK: DeepFace.represent()<br/>→ [2622 floats]
-    DK->>DK: Store embedding in<br/>embeddings.json
-    
-    DK-->>TH: {"success": true}
-    TH-->>FE: {"message": "Saved successfully"}
-```
-
----
-
-## File Structure
-
-```
-Dataiku Model API/
-├── dataiku_model_api.py    # Flask API — all endpoints
-├── embedding_store.py      # Thread-safe embedding persistence
-├── embeddings.json         # Generated at runtime — float vectors only
-├── models/                 # Model weight files (ship separately)
-│   ├── vgg_face_weights.h5
-│   └── retinaface.h5
-├── requirements.txt
-├── .gitignore
-└── ARCHITECTURE.md         # This file
-```
-
----
-
-## Environment Variables
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `HTTP_PLATFORM_PORT` | `5003` | Port to serve on |
-| `EMBEDDINGS_FILE` | `./embeddings.json` | Path to the embeddings JSON file |
-| `DEEPFACE_HOME` | (system default) | Where DeepFace caches model weights |
-
----
-
-## Initial Setup
-
-1. Copy `models/vgg_face_weights.h5` and `models/retinaface.h5` into the `models/` directory.
-2. Install dependencies: `pip install -r requirements.txt`
-3. Start the API: `python dataiku_model_api.py`
-4. Run the migration script (from the Thumbnail API project) to seed embeddings from existing `known_faces_db/`:
-   ```
-   python migrate_embeddings.py
-   ```
+1. **Local Windows Server (IIS / Waitress)**:
+   - Configured via `web.config` with `HttpPlatformHandler`.
+   - Runs `dataiku_model_api.py` served by Waitress with 100 threads on port `5009`.
+2. **Enterprise Dataiku DSS API Deployer**:
+   - The same endpoint logic is deployed as a managed service on Dataiku DSS (`https://rtauevaidss1.rtatestdom.local:13000`).
+   - The gateway (`Face Recognition py`) automatically unwraps Dataiku Deployer envelopes (`{"response": ..., "timing": ...}`).
