@@ -30,7 +30,7 @@ Originally part of a monolithic architecture where heavy deep learning framework
 * **Pure Stateless Execution**: Never stores face images, thumbnails, or personal identities to disk. It receives Base64 image payloads in memory, computes bounding boxes or vector arrays, and immediately purges pixel buffers from memory.
 * **Offline & Air-Gapped Ready**: Bootstraps pre-downloaded model weight files (`vgg_face_weights.h5`, `retinaface.h5`) into the DeepFace model cache during initialization, eliminating runtime internet dependencies.
 * **High-Concurrency Serving**: Powered by the **Waitress** WSGI production server with 100 dedicated worker threads, ensuring rapid non-blocking inference under concurrent loads.
-* **Flexible Deployment Topology**: Functions both as a standalone local Windows microservice (IIS / Waitress on port `5009` or `5003`) and as the reference model API deployed within enterprise **Dataiku DSS** (`https://rtauevaidss1.rtatestdom.local:13000`).
+* **Flexible Deployment Topology**: Functions both as a standalone local Windows microservice (IIS / Waitress on port `5009` or `5003`) and as the reference model API deployed within enterprise **Dataiku DSS** (`https://dataiku-model-api.example.com:13000`).
 
 ---
 
@@ -74,7 +74,7 @@ In the Smart EDMS artificial intelligence architecture, **Dataiku Model API** fu
 ┌────────────────────────────────────────────────────────────────────────────────────────────────────────┐
 │ TIER 3: COGNITIVE & LINGUISTIC REASONING                                                               │
 │ GovAI LLM Platform (https://llmapi.govai.ae) & Translator Microservice (:5010)                        │
-│ • Bilingual Normalization: Normalizes Arabic VIP names (e.g., "أحمد بهروزيان" ➔ "Ahmed Bahrozyan")     │
+│ • Bilingual Normalization: Normalizes Arabic VIP names (e.g., "جون دو" ➔ "John Doe")     │
 │ • Multilingual Tagging: Eliminates duplicate entity representations across Arabic and English portals   │
 │ • Semantic Contextualization: Fuses identified VIPs into document abstracts and video summaries       │
 └────────────────────────────────────────────────────────────────────────────────────────────────────────┘

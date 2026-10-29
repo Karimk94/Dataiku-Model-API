@@ -84,11 +84,11 @@ sequenceDiagram
     DK-->>GW: {"embeddings": [[0.012, -0.048, ...]]}
 
     GW->>CDB: collection.query(embeddings=[...], n_results=1)
-    CDB-->>GW: Match: "ahmed_bahrozyan" (L2 distance: 0.28)
+    CDB-->>GW: Match: "john_doe" (L2 distance: 0.28)
 
     opt If new face enrolled with Arabic name
-        GW->>LLM: Translate "أحمد بهروزيان" to English
-        LLM-->>GW: "Ahmed Bahrozyan"
+        GW->>LLM: Translate "جون دو" to English
+        LLM-->>GW: "John Doe"
     end
 
     Note over GW: Draw green bounding boxes & text labels
@@ -160,5 +160,5 @@ Readiness and liveness probe for monitoring tools and load balancers.
    - Configured via `web.config` with `HttpPlatformHandler`.
    - Runs `dataiku_model_api.py` served by Waitress with 100 threads on port `5009`.
 2. **Enterprise Dataiku DSS API Deployer**:
-   - The same endpoint logic is deployed as a managed service on Dataiku DSS (`https://rtauevaidss1.rtatestdom.local:13000`).
+   - The same endpoint logic is deployed as a managed service on Dataiku DSS (`https://dataiku-model-api.example.com:13000`).
    - The gateway (`Face Recognition py`) automatically unwraps Dataiku Deployer envelopes (`{"response": ..., "timing": ...}`).
